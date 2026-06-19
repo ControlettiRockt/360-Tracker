@@ -1,0 +1,757 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#111214" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<link rel="manifest" href="./manifest.webmanifest" />
+<link rel="icon" href="./icon-192.png" />
+<link rel="apple-touch-icon" href="./icon-192.png" />
+<title>Ferrari 360 Kostentracker</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #111214; }
+  #root { min-height: 100vh; }
+  /* Lade-Hinweis bis React steht */
+  #boot { color: #9aa0a6; font-family: system-ui, sans-serif; text-align: center; padding-top: 40vh; }
+</style>
+<!-- React + Babel (werden vom Service Worker offline zwischengespeichert) -->
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body>
+<div id="root"><div id="boot">Lade Kostentracker…</div></div>
+<script type="text/babel" data-presets="react">
+// --- Hooks aus globalem React ---
+const { useState, useEffect, useMemo, useCallback, useRef } = React;
+
+// --- Lokaler Speicher: window.storage als localStorage-Adapter ---
+// Dadurch funktioniert das automatische Speichern der bestehenden App unveraendert.
+window.storage = {
+  get: async (k) => { try { const v = localStorage.getItem(k); return v == null ? null : { value: v }; } catch (e) { return null; } },
+  set: async (k, v) => { localStorage.setItem(k, v); return { ok: true }; },
+  delete: async (k) => { localStorage.removeItem(k); return { ok: true }; },
+  list: async () => ({ keys: Object.keys(localStorage) }),
+};
+
+
+// ---- Farben ----
+const C = {
+  bg: "#111214", surface: "#1b1d20", surface2: "#232629",
+  line: "#34383d", lineSoft: "#2a2e32", text: "#e6e6e6",
+  textDim: "#9aa0a6", yellow: "#FCF000",
+};
+const NUMFONT = "'Titillium Web','Segoe UI',system-ui,sans-serif";
+
+const STATUS = {
+  geplant:   { label: "Geplant",      color: "#9aa0a6", bg: "#2a2e32" },
+  recherche: { label: "In Recherche", color: "#5ab0ff", bg: "#15293b" },
+  bestellt:  { label: "Bestellt",     color: "#ffb84d", bg: "#3a2c12" },
+  eingebaut: { label: "Erledigt",     color: "#5fd38a", bg: "#143020" },
+  verworfen: { label: "Verworfen",    color: "#ff6b6b", bg: "#3a1717" },
+};
+const STATUS_KEYS = Object.keys(STATUS);
+
+const CATS_MODS  = ["Anschaffung", "Fahrzeug", "Versicherung", "Felgen", "Reifen", "Exterieur", "Interieur", "Zubehör", "Pflege"];
+const CATS_REC   = ["Versicherung", "Steuer"];
+const CATS_WORK  = ["Service", "Reparatur", "HU/AU", "TÜV"];
+const CATS_FLUID = ["Benzin", "Motoröl", "Getriebeöl", "Kühlmittel"];
+
+const CAT_COLORS = {
+  "Anschaffung": "#FF2800",
+  Fahrzeug: "#5fd38a", Versicherung: "#5ab0ff", Felgen: "#ffffff", Reifen: "#c9ced4",
+  Exterieur: "#ff6b57", Interieur: "#FCF000", "Zubehör": "#6fc3ff", Pflege: "#ff5fa2",
+  Steuer: "#f4a259",
+  Service: "#5fd38a", Reparatur: "#ff6b6b", "HU/AU": "#5ab0ff", "TÜV": "#ffb84d",
+  Benzin: "#ff8a5f", "Motoröl": "#ffd166", "Getriebeöl": "#c98aff", "Kühlmittel": "#5fd0d3",
+};
+
+const FUEL_BRANDS = ["ARAL", "SHELL", "ENI"];
+const FUEL_BRAND_STYLE = {
+  ARAL:  { color: "#ffffff", background: "#0a5cb0" }, // weiß auf blau
+  SHELL: { color: "#e2231a", background: "#ffd400" }, // rot auf gelb
+  ENI:   { color: "#111111", background: "#ffd400" }, // schwarz auf gelb
+};
+const INTERVALS = ["jährlich", "halbjährlich", "quartalsweise", "monatlich", "einmalig"];
+const INTERVAL_FACTOR = { "jährlich": 1, "halbjährlich": 2, "quartalsweise": 4, "monatlich": 12, "einmalig": 0 };
+
+const COLS_REC = [
+  { key: "datum", label: "Datum", kind: "date", w: 150 },
+  { key: "kat", label: "Kategorie", kind: "cat", w: 150 },
+  { key: "anbieter", label: "Anbieter / Quelle", kind: "text", w: 170 },
+  { key: "intervall", label: "Intervall", kind: "select", options: INTERVALS, w: 140 },
+  { key: "preis", label: "Betrag", kind: "money", w: 110 },
+  { key: "notiz", label: "Notiz", kind: "text", w: 190 },
+];
+const COLS_WORK = [
+  { key: "datum", label: "Datum", kind: "date", w: 150 },
+  { key: "bez", label: "Bezeichnung", kind: "text", w: 220 },
+  { key: "kat", label: "Kategorie", kind: "cat", w: 140 },
+  { key: "anbieter", label: "Anbieter / Quelle", kind: "text", w: 170 },
+  { key: "preis", label: "Betrag", kind: "money", w: 110 },
+  { key: "notiz", label: "Notiz", kind: "text", w: 190 },
+];
+const COLS_FLUID = [
+  { key: "datum", label: "Datum", kind: "date", w: 150 },
+  { key: "kat", label: "Kategorie", kind: "cat", w: 140 },
+  { key: "anbieter", label: "Anbieter", kind: "anbieter", w: 120 },
+  { key: "liter", label: "Liter", kind: "num", w: 90, suffix: "L" },
+  { key: "km", label: "km", kind: "num", w: 90 },
+  { key: "preis", label: "Betrag", kind: "money", w: 110 },
+  { key: "notiz", label: "Notiz", kind: "text", w: 170 },
+];
+
+const STORAGE_KEY = "ferrari360-mods-v5";
+
+const SEED_MODS = [
+  { id: "n178141755698960bv", mod: "Ferrari 360 Modena", kat: "Anschaffung", anbieter: "Hoffmann", preis: "78000", status: "eingebaut", notiz: "", link: "" },
+  { id: "n1781417558807ycgq", mod: "Versicherung", kat: "Fahrzeug", anbieter: "", preis: 0, status: "geplant", notiz: "", link: "" },
+  { id: "n1781417560324730i", mod: "Felgen entlacken & pulvern", kat: "Felgen", anbieter: "Felgenklinik KL", preis: "714", status: "bestellt", notiz: "", link: "" },
+  { id: "n1781417561786vc4c", mod: "Reifen Pilot Sport 5", kat: "Reifen", anbieter: "Easy Reifen KL", preis: "950", status: "bestellt", notiz: "", link: "" },
+  { id: "n1781417563200gzk3", mod: "Steinschlagschutzfolie ab & neu", kat: "Fahrzeug", anbieter: "", preis: 0, status: "geplant", notiz: "", link: "" },
+  { id: "n1781417564596gtac", mod: "Ceramic Coating", kat: "Fahrzeug", anbieter: "", preis: 0, status: "geplant", notiz: "", link: "" },
+  { id: "n17814175660143qe4", mod: "Schwämme & Microfasertücher", kat: "Fahrzeug", anbieter: "", preis: 0, status: "geplant", notiz: "", link: "" },
+  { id: "n1781417567444av80", mod: "Reiniger", kat: "Fahrzeug", anbieter: "", preis: 0, status: "geplant", notiz: "", link: "" },
+  { id: "n1781417568866aa3l", mod: "Radio BLAUPUNKT Frankfurt", kat: "Fahrzeug", anbieter: "BLAUPUNKT, Amazon", preis: "403.90", status: "geplant", notiz: "", link: "" },
+  { id: "n1781417570285op4g", mod: "Gurtpolster", kat: "Interieur", anbieter: "FERRARI, Ebay", preis: "392.50", status: "bestellt", notiz: "", link: "" },
+  { id: "n17814175728369p6o", mod: "Radnarbenkappen", kat: "Felgen", anbieter: "FERRARI, Ebay", preis: "140.01", status: "bestellt", notiz: "", link: "" },
+  { id: "n17814175742521r6y", mod: "Carbon Tachoblende", kat: "Fahrzeug", anbieter: "", preis: 0, status: "geplant", notiz: "", link: "" },
+  { id: "n1781417575716tuuy", mod: "Carbon Radioblende", kat: "Fahrzeug", anbieter: "", preis: 0, status: "geplant", notiz: "", link: "" },
+  { id: "n1781417577112h8uj", mod: "Carbon Mittelkonsole", kat: "Fahrzeug", anbieter: "", preis: 0, status: "geplant", notiz: "", link: "" },
+  { id: "n1781417578469gsf2", mod: "Carbon Türverkleidung", kat: "Fahrzeug", anbieter: "", preis: 0, status: "geplant", notiz: "", link: "" },
+  { id: "n17814175812241r2e", mod: "Tachoscheibe CS Style", kat: "Fahrzeug", anbieter: "", preis: 0, status: "geplant", notiz: "", link: "" },
+  { id: "n17814175826247pt3", mod: "Diffusor / GFK Reparaturen", kat: "Fahrzeug", anbieter: "", preis: 0, status: "geplant", notiz: "", link: "" },
+  { id: "n1781417584015sfi2", mod: "F1 Championship Plakette", kat: "Interieur", anbieter: "FERRARI, Ebay", preis: "270.96", status: "geplant", notiz: "", link: "" },
+  { id: "n1781417585439279p", mod: "Handyhalterung", kat: "Interieur", anbieter: "", preis: 0, status: "geplant", notiz: "", link: "" },
+  { id: "n17814175868560ovr", mod: "Decals", kat: "Exterieur", anbieter: "", preis: 0, status: "geplant", notiz: "", link: "" },
+  { id: "n17814183863340vrt", mod: "Fußmatten", kat: "Interieur", anbieter: "", preis: 0, status: "geplant", notiz: "", link: "" },
+];
+
+const hasStorage = typeof window !== "undefined" && window.storage && typeof window.storage.get === "function";
+const fmtEUR = (n) => (Number(n) || 0).toLocaleString("de-DE", { style: "currency", currency: "EUR", maximumFractionDigits: 0 });
+const fmtK = (n) => { n = Number(n) || 0; return n >= 1000 ? (n / 1000).toFixed(n >= 10000 ? 0 : 1).replace(".", ",") + "k" : String(Math.round(n)); };
+const uid = (p) => p + Date.now() + Math.random().toString(36).slice(2, 6);
+const today = () => new Date().toISOString().slice(0, 10);
+
+function normalizeSnap(data) {
+  let snap;
+  if (Array.isArray(data)) snap = { mods: data, recurring: [], workshop: [], fluids: [] };
+  else snap = {
+    mods: Array.isArray(data.mods) ? data.mods : [],
+    recurring: Array.isArray(data.recurring) ? data.recurring : [],
+    workshop: Array.isArray(data.workshop) ? data.workshop : [],
+    fluids: Array.isArray(data.fluids) ? data.fluids : [],
+  };
+  // Migration: das Fahrzeug selbst der Kategorie "Anschaffung" zuordnen, falls noch nicht vorhanden
+  if (!snap.mods.some((r) => r.kat === "Anschaffung")) {
+    let idx = snap.mods.findIndex((r) => r.id === "n178141755698960bv");
+    if (idx < 0) idx = snap.mods.findIndex((r) => /ferrari\s*360/i.test(r.mod || ""));
+    if (idx >= 0) snap.mods = snap.mods.map((r, i) => (i === idx ? { ...r, kat: "Anschaffung" } : r));
+  }
+  return snap;
+}
+
+function App() {
+  const [mods, setMods] = useState(SEED_MODS);
+  const [recurring, setRecurring] = useState([]);
+  const [workshop, setWorkshop] = useState([]);
+  const [fluids, setFluids] = useState([]);
+
+  const [loaded, setLoaded] = useState(false);
+  const [filter, setFilter] = useState("alle");
+  const [sortKey, setSortKey] = useState(null);
+  const [sortDir, setSortDir] = useState(1);
+  const [hideAnsch, setHideAnsch] = useState(false);
+  const [hideAnschM, setHideAnschM] = useState(false);
+  const [save, setSave] = useState("idle");
+  const [showBackup, setShowBackup] = useState(false);
+  const [backupDraft, setBackupDraft] = useState("");
+  const [note, setNote] = useState("");
+
+  const debounceRef = useRef(null);
+  const backupRef = useRef(null);
+  const draftDirty = useRef(false); // true = Nutzer hat das Feld selbst verändert (Import), dann nicht überschreiben
+
+  const flash = (m) => { setNote(m); setTimeout(() => setNote(""), 2800); };
+
+  useEffect(() => {
+    (async () => {
+      if (!hasStorage) { setLoaded(true); return; }
+      try {
+        const res = await window.storage.get(STORAGE_KEY, false);
+        if (res && res.value) {
+          const s = normalizeSnap(JSON.parse(res.value));
+          setMods(s.mods); setRecurring(s.recurring); setWorkshop(s.workshop); setFluids(s.fluids);
+          setSave("saved");
+        }
+      } catch (e) { /* still */ }
+      finally { setLoaded(true); }
+    })();
+  }, []);
+
+  const persist = useCallback((snap, immediate) => {
+    if (!hasStorage) return;
+    setSave("saving");
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    const attempt = async (n) => {
+      try {
+        const r = await window.storage.set(STORAGE_KEY, JSON.stringify(snap), false);
+        if (r) setSave("saved"); else throw new Error("null");
+      } catch (e) { if (!n) { setTimeout(() => attempt(1), 1000); return; } setSave("error"); }
+    };
+    if (immediate) attempt(0); else debounceRef.current = setTimeout(() => attempt(0), 600);
+  }, []);
+
+  const snap = (over) => ({ mods, recurring, workshop, fluids, ...over });
+  const setModsRows  = (next, imm) => { setMods(next);      persist(snap({ mods: next }), imm); };
+  const setRecRows   = (next, imm) => { setRecurring(next); persist(snap({ recurring: next }), imm); };
+  const setWorkRows  = (next, imm) => { setWorkshop(next);  persist(snap({ workshop: next }), imm); };
+  const setFluidRows = (next, imm) => { setFluids(next);    persist(snap({ fluids: next }), imm); };
+
+  // Haupttabelle
+  const setCell = (id, key, val, imm) => setModsRows(mods.map((r) => (r.id === id ? { ...r, [key]: val } : r)), imm);
+  const addRow = () => setModsRows([...mods, { id: uid("n"), datum: "", mod: "", kat: "Fahrzeug", anbieter: "", preis: 0, status: "geplant", notiz: "", link: "" }], true);
+  const delRow = (id) => setModsRows(mods.filter((r) => r.id !== id), true);
+  const toggleSort = (key) => { if (sortKey === key) setSortDir((d) => -d); else { setSortKey(key); setSortDir(1); } };
+
+  const view = useMemo(() => {
+    let v = mods;
+    if (filter !== "alle") v = v.filter((r) => r.status === filter);
+    if (sortKey) {
+      v = [...v].sort((a, b) => {
+        let x = a[sortKey], y = b[sortKey];
+        if (sortKey === "preis") { x = Number(x) || 0; y = Number(y) || 0; }
+        else { x = (x || "").toString().toLowerCase(); y = (y || "").toString().toLowerCase(); }
+        return x < y ? -sortDir : x > y ? sortDir : 0;
+      });
+    }
+    return v;
+  }, [mods, filter, sortKey, sortDir]);
+
+  const sums = useMemo(() => {
+    const active = mods.filter((r) => r.status !== "verworfen");
+    const carCost = active.filter((r) => r.kat === "Anschaffung").reduce((s, r) => s + (Number(r.preis) || 0), 0);
+    const EXCL = ["Anschaffung", "Pflege", "Zubehör"];
+    const umbau = active.filter((r) => !EXCL.includes(r.kat));
+    const umbauTotal = umbau.reduce((s, r) => s + (Number(r.preis) || 0), 0);
+    const umbauOffen = umbau.filter((r) => r.status !== "eingebaut").reduce((s, r) => s + (Number(r.preis) || 0), 0);
+    const pzTotal = active.filter((r) => r.kat === "Pflege" || r.kat === "Zubehör").reduce((s, r) => s + (Number(r.preis) || 0), 0);
+    return { carCost, umbauTotal, umbauOffen, umbauErledigt: umbauTotal - umbauOffen, pzTotal };
+  }, [mods]);
+
+  const spritTotal = useMemo(() => fluids.filter((r) => r.kat === "Benzin").reduce((s, r) => s + (Number(r.preis) || 0), 0), [fluids]);
+
+  const workTotal = useMemo(() => workshop.reduce((s, r) => s + (Number(r.preis) || 0), 0), [workshop]);
+  const fluidTotal = useMemo(() => fluids.reduce((s, r) => s + (Number(r.preis) || 0), 0), [fluids]);
+  const recPA = useMemo(() => recurring.reduce((s, r) => s + (Number(r.preis) || 0) * (INTERVAL_FACTOR[r.intervall] ?? 1), 0), [recurring]);
+
+  const catSums = useMemo(() => {
+    const m = {};
+    mods.filter((r) => r.status !== "verworfen").forEach((r) => {
+      if (hideAnsch && r.kat === "Anschaffung") return;
+      const v = Number(r.preis) || 0;
+      if (v > 0) m[r.kat] = (m[r.kat] || 0) + v;
+    });
+    return Object.keys(m).map((c) => ({ name: c, value: m[c], color: CAT_COLORS[c] || C.textDim })).sort((a, b) => b.value - a.value);
+  }, [mods, hideAnsch]);
+  const catTotal = useMemo(() => catSums.reduce((s, d) => s + d.value, 0), [catSums]);
+
+  const monthly = useMemo(() => {
+    const m = {};
+    const add = (r) => {
+      const key = String(r.datum || "").slice(0, 7);
+      if (!/^\d{4}-\d{2}$/.test(key)) return;
+      const v = Number(r.preis) || 0;
+      if (v <= 0) return;
+      m[key] = (m[key] || 0) + v;
+    };
+    mods.forEach((r) => { if (r.status === "verworfen") return; if (hideAnschM && r.kat === "Anschaffung") return; add(r); });
+    workshop.forEach(add);
+    fluids.forEach(add);
+    return Object.keys(m).sort().map((k) => ({ month: k, value: m[k], label: k.slice(5, 7) + "/" + k.slice(2, 4) }));
+  }, [mods, workshop, fluids, hideAnschM]);
+
+  // Sicherung
+  const backupText = useMemo(() => JSON.stringify({ mods, recurring, workshop, fluids }, null, 2), [mods, recurring, workshop, fluids]);
+  const openBackup = () => { draftDirty.current = false; setBackupDraft(backupText); setShowBackup(true); setTimeout(() => { if (backupRef.current) { backupRef.current.focus(); backupRef.current.select(); } }, 60); };
+  // Feld zeigt live den aktuellen Stand – aber nur solange der Nutzer es nicht selbst verändert hat (Import).
+  useEffect(() => { if (showBackup && !draftDirty.current) setBackupDraft(backupText); }, [backupText, showBackup]);
+
+  const download = (content, name, type) => {
+    try {
+      const blob = new Blob([content], { type });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob); a.download = name;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      URL.revokeObjectURL(a.href); flash("Download gestartet");
+    } catch (e) { openBackup(); flash("Download blockiert – bitte Text kopieren"); }
+  };
+  const exportJSON = () => download(backupText, `kostentracker-360_${today()}.json`, "application/json");
+  const exportCSV = () => {
+    const head = ["Bereich", "Datum", "Bezeichnung", "Kategorie", "Anbieter/Quelle", "Intervall", "Liter", "km", "Betrag", "Status", "Notiz"];
+    const esc = (s) => `"${(s ?? "").toString().replace(/"/g, '""')}"`;
+    const lines = [head.map(esc).join(";")];
+    const add = (ber, r, st) => lines.push([ber, r.datum || "", r.mod || r.bez || "", r.kat, r.anbieter, r.intervall || "", r.liter || "", r.km || "", r.preis, st || "", r.notiz].map(esc).join(";"));
+    mods.forEach((r) => add("Anschaffung/Umbau", r, (STATUS[r.status] || {}).label || r.status));
+    recurring.forEach((r) => add("Wiederkehrend", r, ""));
+    workshop.forEach((r) => add("Werkstatt", r, ""));
+    fluids.forEach((r) => add("Flüssigkeiten", r, ""));
+    download("\uFEFF" + lines.join("\r\n"), `kostentracker-360_${today()}.csv`, "text/csv;charset=utf-8");
+  };
+  const copyBackup = async () => {
+    draftDirty.current = false; setBackupDraft(backupText); // Feld zeigt exakt, was kopiert wird (= aktueller Stand)
+    try { await navigator.clipboard.writeText(backupText); flash("Aktueller Stand kopiert"); }
+    catch (e) {
+      if (backupRef.current) {
+        backupRef.current.value = backupText; backupRef.current.focus(); backupRef.current.select();
+        try { document.execCommand("copy"); flash("Aktueller Stand kopiert"); } catch (_) { flash("Bitte Text im Feld markieren und kopieren"); }
+      } else flash("Bitte Text im Feld markieren und kopieren");
+    }
+  };
+  const importDraft = () => {
+    try {
+      const s = normalizeSnap(JSON.parse(backupDraft));
+      setMods(s.mods); setRecurring(s.recurring); setWorkshop(s.workshop); setFluids(s.fluids);
+      persist(s, true); draftDirty.current = false; flash("Daten eingelesen");
+    } catch (err) { flash("JSON ungültig – bitte prüfen"); }
+  };
+
+  const inputBase = { width: "100%", background: "transparent", border: "1px solid transparent", color: C.text, fontSize: 13, padding: "6px 7px", borderRadius: 6, outline: "none", fontFamily: "inherit" };
+
+  return (
+    <div style={{ minHeight: "100vh", background: C.bg, color: C.text, fontFamily: "'Inter','Segoe UI',system-ui,sans-serif", padding: "20px 16px 60px" }}>
+      <style>{`
+        input:focus, select:focus, textarea:focus { border-color:${C.yellow}!important; background:${C.bg}!important; }
+        input::placeholder, textarea::placeholder { color:#5c6166; }
+        select option { background:${C.surface2}; color:${C.text}; }
+        .hdr:hover { color:${C.yellow}; cursor:pointer; }
+        tr.row:hover td { background:${C.surface2}; }
+        .danger:hover { color:#ff6b6b!important; }
+        ::-webkit-scrollbar { height:10px; width:10px; }
+        ::-webkit-scrollbar-track { background:${C.bg}; }
+        ::-webkit-scrollbar-thumb { background:${C.line}; border-radius:5px; }
+      `}</style>
+
+      <div style={{ maxWidth: 1180, margin: "0 auto" }}>
+        {/* Header */}
+        <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", flexWrap: "wrap", gap: 12, marginBottom: 18 }}>
+          <div>
+            <div style={{ fontSize: 11, letterSpacing: 3, color: C.textDim, textTransform: "uppercase" }}>Ferrari 360 Modena F1</div>
+            <h1 style={{ margin: "4px 0 0", fontSize: 36, fontWeight: 900, color: C.yellow, letterSpacing: 0.5, fontFamily: NUMFONT, textTransform: "uppercase" }}>
+              Kostentracker Ferrari 360
+            </h1>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+            {(save === "saving" || save === "saved") && (
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 7, fontSize: 12, color: save === "saved" ? "#5fd38a" : "#ffb84d" }}>
+                <span style={{ width: 8, height: 8, borderRadius: "50%", background: save === "saved" ? "#5fd38a" : "#ffb84d" }} />
+                {save === "saved" ? "Gespeichert" : "Speichert…"}
+              </span>
+            )}
+            {note && <span style={{ fontSize: 12, color: C.yellow }}>{note}</span>}
+            <button onClick={() => (showBackup ? setShowBackup(false) : openBackup())} style={btn(C, true)}>{showBackup ? "Sicherung schließen" : "Sicherung / Import"}</button>
+          </div>
+        </div>
+
+        {showBackup && (
+          <div style={{ marginBottom: 22, background: C.surface, border: `1px solid ${C.line}`, borderRadius: 12, padding: 14 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 10, marginBottom: 10 }}>
+              <div style={{ fontSize: 12, color: C.textDim, lineHeight: 1.5, flex: 1, minWidth: 220 }}>
+                <strong style={{ color: C.text }}>Wiederherstellen:</strong> ins Feld klicken → Strg+V (⌘V) → „Einlesen".{" "}
+                <strong style={{ color: C.text }}>Sichern:</strong> „Kopieren".
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button onClick={() => { draftDirty.current = true; setBackupDraft(""); }} style={btn(C, false)}>Feld leeren</button>
+                <button onClick={importDraft} style={btn(C, true)}>Einlesen</button>
+              </div>
+            </div>
+            <textarea ref={backupRef} value={backupDraft} onChange={(e) => { draftDirty.current = true; setBackupDraft(e.target.value); }} spellCheck={false}
+              placeholder="Gesicherten Code hier mit Strg+V einfügen, dann Einlesen"
+              style={{ width: "100%", minHeight: 160, background: C.bg, color: C.text, border: `1px solid ${C.line}`, borderRadius: 8, padding: 10, fontSize: 12, fontFamily: "ui-monospace,Menlo,Consolas,monospace", resize: "vertical" }} />
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10, alignItems: "center" }}>
+              <span style={{ fontSize: 12, color: C.textDim, marginRight: 4 }}>Sichern:</span>
+              <button onClick={copyBackup} style={btn(C, false)}>Kopieren</button>
+            </div>
+          </div>
+        )}
+
+        {/* KPIs */}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 12, marginBottom: 16 }}>
+          <Kpi label="Fixkosten / Jahr" value={fmtEUR(recPA)} accent="#5ab0ff" C={C} />
+          <Kpi label="Benzin" value={fmtEUR(spritTotal)} accent="#ff8a5f" C={C} />
+          <Kpi label="Umbau offen" value={fmtEUR(sums.umbauOffen)} accent={C.text} C={C} />
+          <Kpi label="Gesamt" value={fmtEUR(sums.carCost + sums.umbauTotal + sums.pzTotal + workTotal + fluidTotal)} accent={C.yellow} big C={C} />
+        </div>
+
+        {/* Pie */}
+        <div style={{ background: C.surface, border: `1px solid ${C.line}`, borderRadius: 12, padding: "16px 18px", marginBottom: 22 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10, marginBottom: 14 }}>
+            <div style={{ fontSize: 11, letterSpacing: 1, textTransform: "uppercase", color: C.textDim }}>Kosten nach Kategorie (Anschaffung & Umbau)</div>
+            <button onClick={() => setHideAnsch((v) => !v)} style={{ ...btn(C, false), padding: "6px 12px", fontSize: 12 }}>
+              {hideAnsch ? "Anschaffung einblenden" : "Anschaffung ausblenden"}
+            </button>
+          </div>
+          <PieChart data={catSums} total={catTotal} C={C} />
+        </div>
+
+        {/* Ausgaben pro Monat */}
+        <div style={{ background: C.surface, border: `1px solid ${C.line}`, borderRadius: 12, padding: "16px 18px", marginBottom: 22 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10, marginBottom: 14 }}>
+            <div style={{ fontSize: 11, letterSpacing: 1, textTransform: "uppercase", color: C.textDim }}>Ausgaben pro Monat</div>
+            <button onClick={() => setHideAnschM((v) => !v)} style={{ ...btn(C, false), padding: "6px 12px", fontSize: 12 }}>
+              {hideAnschM ? "Anschaffung einblenden" : "Anschaffung ausblenden"}
+            </button>
+          </div>
+          <MonthlyChart data={monthly} C={C} />
+        </div>
+
+        {/* Tabelle 1 */}
+        <SectionTitle C={C}>Anschaffung & Modifikationen</SectionTitle>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12, alignItems: "center" }}>
+          <Chip active={filter === "alle"} onClick={() => setFilter("alle")} C={C}>Alle ({mods.length})</Chip>
+          {STATUS_KEYS.map((k) => {
+            const n = mods.filter((r) => r.status === k).length;
+            if (!n) return null;
+            return <Chip key={k} active={filter === k} onClick={() => setFilter(k)} C={C} dot={STATUS[k].color}>{STATUS[k].label} ({n})</Chip>;
+          })}
+          <button onClick={addRow} style={{ ...btn(C, true), marginLeft: "auto" }}>+ Zeile</button>
+        </div>
+
+        <div style={{ background: C.surface, border: `1px solid ${C.line}`, borderRadius: 12, overflow: "hidden" }}>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 1080 }}>
+              <thead>
+                <tr style={{ background: "#000" }}>
+                  {[["datum", "Datum", 150], ["mod", "Position", 230], ["kat", "Kategorie", 130], ["anbieter", "Anbieter / Quelle", 180], ["preis", "Preis", 110], ["status", "Status", 150], ["notiz", "Notiz", 240]].map(([key, label, w]) => (
+                    <th key={key} className="hdr" onClick={() => toggleSort(key)}
+                      style={{ textAlign: "left", padding: "11px 9px", fontSize: 11, letterSpacing: 1, textTransform: "uppercase", color: "#fff", fontWeight: 700, minWidth: w, borderBottom: `1px solid ${C.line}`, whiteSpace: "nowrap", userSelect: "none" }}>
+                      {label}{sortKey === key ? (sortDir === 1 ? " ▲" : " ▼") : ""}
+                    </th>
+                  ))}
+                  <th style={{ width: 34, background: "#000", borderBottom: `1px solid ${C.line}` }} />
+                </tr>
+              </thead>
+              <tbody>
+                {view.map((r) => {
+                  const st = STATUS[r.status] || STATUS.geplant;
+                  const dropped = r.status === "verworfen";
+                  const catColor = CAT_COLORS[r.kat] || C.textDim;
+                  return (
+                    <tr key={r.id} className="row" style={{ borderBottom: `1px solid ${C.lineSoft}` }}>
+                      <td style={td()}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                          <input type="date" value={r.datum || ""} onChange={(e) => setCell(r.id, "datum", e.target.value, true)}
+                            style={{ ...inputBase, colorScheme: "dark", fontFamily: NUMFONT, fontSize: 12, color: r.datum ? C.text : C.textDim }} />
+                          <button onClick={() => setCell(r.id, "datum", today(), true)} title="Heute eintragen" style={heuteBtn(C)}>heute</button>
+                        </div>
+                      </td>
+                      <td style={td()}>
+                        <textarea rows={1} value={r.mod} placeholder="Position…" onChange={(e) => setCell(r.id, "mod", e.target.value)}
+                          style={{ ...inputBase, resize: "vertical", fontWeight: 600, textDecoration: dropped ? "line-through" : "none", color: dropped ? C.textDim : catColor }} />
+                      </td>
+                      <td style={td()}>
+                        <select value={r.kat} onChange={(e) => setCell(r.id, "kat", e.target.value, true)}
+                          style={{ ...inputBase, cursor: "pointer", fontWeight: 700, fontSize: 12, color: catColor, background: catColor + "14", border: `1px solid ${catColor}33` }}>
+                          {CATS_MODS.map((c) => <option key={c} value={c}>{c}</option>)}
+                        </select>
+                      </td>
+                      <td style={td()}>
+                        <textarea rows={1} value={r.anbieter} placeholder="—" onChange={(e) => setCell(r.id, "anbieter", e.target.value)} style={{ ...inputBase, resize: "vertical", color: C.textDim }} />
+                      </td>
+                      <td style={td()}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 2 }}>
+                          <input type="number" value={r.preis} placeholder="0" onChange={(e) => setCell(r.id, "preis", e.target.value)}
+                            style={{ ...inputBase, textAlign: "right", fontFamily: NUMFONT, fontVariantNumeric: "tabular-nums", fontWeight: 700, fontSize: 14, color: dropped ? C.textDim : C.yellow }} />
+                          <span style={{ color: C.textDim, fontSize: 13, paddingRight: 4 }}>€</span>
+                        </div>
+                      </td>
+                      <td style={td()}>
+                        <select value={r.status} onChange={(e) => setCell(r.id, "status", e.target.value, true)}
+                          style={{ width: "100%", cursor: "pointer", borderRadius: 6, padding: "6px 7px", fontSize: 12, fontWeight: 700, outline: "none", border: `1px solid ${st.color}33`, color: st.color, background: st.bg }}>
+                          {STATUS_KEYS.map((k) => <option key={k} value={k}>{STATUS[k].label}</option>)}
+                        </select>
+                      </td>
+                      <td style={td()}>
+                        <textarea rows={1} value={r.notiz} placeholder="—" onChange={(e) => setCell(r.id, "notiz", e.target.value)} style={{ ...inputBase, resize: "vertical", fontSize: 12, color: C.textDim }} />
+                      </td>
+                      <td style={{ ...td(), textAlign: "center" }}>
+                        <button className="danger" onClick={() => delRow(r.id)} title="Zeile löschen" style={{ background: "none", border: "none", color: C.textDim, cursor: "pointer", fontSize: 18, lineHeight: 1, padding: 4 }}>×</button>
+                      </td>
+                    </tr>
+                  );
+                })}
+                {view.length === 0 && (<tr><td colSpan={8} style={{ padding: 28, textAlign: "center", color: C.textDim }}>Keine Einträge.</td></tr>)}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        {/* Tabellen 2-4 */}
+        <CostTable title="Wiederkehrende Kosten" rows={recurring} columns={COLS_REC} cats={CATS_REC} onChange={setRecRows} C={C} summary={recSummary} />
+        <CostTable title="Werkstattkosten" rows={workshop} columns={COLS_WORK} cats={CATS_WORK} onChange={setWorkRows} C={C} />
+        <CostTable title="Benzin & Flüssigkeiten" rows={fluids} columns={COLS_FLUID} cats={CATS_FLUID} onChange={setFluidRows} C={C} summary={fluidSummary} catDefaults={{ Benzin: { anbieter: "ARAL" } }} />
+
+        {/* Footer */}
+        <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 8, marginTop: 24 }}>
+          <button onClick={exportJSON} style={btn(C, false)}>Export JSON</button>
+          <button onClick={exportCSV} style={btn(C, false)}>Export CSV</button>
+        </div>
+        <div style={{ marginTop: 8, fontSize: 11.5, color: C.textDim }}>
+          Tipp: Auto-Speichern ist je nach Umgebung nicht garantiert – vor dem Schließen am besten oben per „Sicherung / Import → Kopieren" sichern.
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const td = () => ({ padding: "3px 4px", verticalAlign: "top" });
+const heuteBtn = (C) => ({ background: "transparent", border: `1px solid ${C.line}`, color: C.textDim, borderRadius: 6, padding: "5px 8px", fontSize: 11, cursor: "pointer", whiteSpace: "nowrap" });
+
+function btn(C, primary) {
+  return { background: primary ? C.yellow : "transparent", color: primary ? "#111" : C.textDim, border: primary ? "none" : `1px solid ${C.line}`, padding: "9px 16px", borderRadius: 8, fontWeight: 700, fontSize: 13, cursor: "pointer", fontFamily: "inherit" };
+}
+function SectionTitle({ children, C }) {
+  return <h2 style={{ margin: "0 0 12px", fontSize: 16, fontWeight: 700, color: C.text, textTransform: "uppercase", letterSpacing: 1 }}>{children}</h2>;
+}
+function Kpi({ label, value, accent, big, C }) {
+  return (
+    <div style={{ background: C.surface, border: `1px solid ${C.line}`, borderRadius: 12, padding: "14px 16px" }}>
+      <div style={{ fontSize: 11, letterSpacing: 1, textTransform: "uppercase", color: C.textDim }}>{label}</div>
+      <div style={{ marginTop: 6, fontSize: big ? 28 : 22, fontWeight: 700, color: accent, fontFamily: NUMFONT, fontVariantNumeric: "tabular-nums" }}>{value}</div>
+    </div>
+  );
+}
+function Chip({ active, onClick, children, C, dot }) {
+  return (
+    <button onClick={onClick} style={{ display: "inline-flex", alignItems: "center", gap: 6, background: active ? C.yellow : C.surface, color: active ? "#111" : C.textDim, border: `1px solid ${active ? C.yellow : C.line}`, padding: "6px 12px", borderRadius: 20, fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>
+      {dot && <span style={{ width: 7, height: 7, borderRadius: "50%", background: dot }} />}
+      {children}
+    </button>
+  );
+}
+
+function recSummary(rows, C) {
+  const pa = rows.reduce((s, r) => s + (Number(r.preis) || 0) * (INTERVAL_FACTOR[r.intervall] ?? 1), 0);
+  return <span style={{ fontSize: 13, color: C.textDim }}>p. a. <span style={{ color: C.yellow, fontFamily: NUMFONT, fontWeight: 700 }}>{fmtEUR(pa)}</span> · p. M. {fmtEUR(pa / 12)}</span>;
+}
+function fluidSummary(rows, C) {
+  const total = rows.reduce((s, r) => s + (Number(r.preis) || 0), 0);
+  const b = rows.filter((r) => r.kat === "Benzin");
+  const liter = b.reduce((s, r) => s + (Number(r.liter) || 0), 0);
+  const km = b.reduce((s, r) => s + (Number(r.km) || 0), 0);
+  const eur = b.reduce((s, r) => s + (Number(r.preis) || 0), 0);
+  const parts = [];
+  if (km > 0 && liter > 0) parts.push(`Ø ${(liter / km * 100).toFixed(1)} L/100km`);
+  if (km > 0 && eur > 0) parts.push(`${fmtEUR(eur / km * 100)}/100km`);
+  return <span style={{ fontSize: 13, color: C.textDim }}>Summe <span style={{ color: C.yellow, fontFamily: NUMFONT, fontWeight: 700 }}>{fmtEUR(total)}</span>{parts.length ? " · " + parts.join(" · ") : ""}</span>;
+}
+
+function PieChart({ data, total, C }) {
+  if (!data.length || total <= 0) return <div style={{ color: C.textDim, fontSize: 13 }}>Noch keine Kosten erfasst (Preise eintragen).</div>;
+  const W = 380, H = 230, cx = W / 2, cy = H / 2, r = 64, hole = 40, lr = r + 16;
+  const rad = (a) => (a - 90) * Math.PI / 180;
+  const pt = (a, rr) => [cx + rr * Math.cos(rad(a)), cy + rr * Math.sin(rad(a))];
+  const wedge = (s, e) => { const [x1, y1] = pt(s, r), [x2, y2] = pt(e, r); const large = e - s > 180 ? 1 : 0; return `M ${cx} ${cy} L ${x1} ${y1} A ${r} ${r} 0 ${large} 1 ${x2} ${y2} Z`; };
+  let acc = 0;
+  const slices = data.map((d) => { const s = (acc / total) * 360; acc += d.value; const e = (acc / total) * 360; return { ...d, s, e, mid: (s + e) / 2, pct: (d.value / total) * 100 }; });
+  return (
+    <svg width="100%" viewBox={`0 0 ${W} ${H}`} style={{ maxWidth: 480, display: "block", margin: "0 auto" }}>
+      {slices.length === 1
+        ? <circle cx={cx} cy={cy} r={r} fill={slices[0].color} />
+        : slices.map((s, i) => <path key={i} d={wedge(s.s, s.e)} fill={s.color} stroke={C.surface} strokeWidth={2} />)}
+      <circle cx={cx} cy={cy} r={hole} fill={C.surface} />
+      <text x={cx} y={cy - 3} textAnchor="middle" fontSize="9" letterSpacing="1.5" fill={C.textDim}>GESAMT</text>
+      <text x={cx} y={cy + 14} textAnchor="middle" fontSize="15" fontWeight="700" fill={C.yellow} fontFamily={NUMFONT}>{fmtEUR(total)}</text>
+      {slices.map((s, i) => {
+        if (s.pct < 2) return null;
+        const [ax, ay] = pt(s.mid, r);
+        const [bx, by] = pt(s.mid, lr);
+        const right = bx >= cx;
+        const tx = right ? bx + 3 : bx - 3;
+        const anchor = right ? "start" : "end";
+        return (
+          <g key={"l" + i}>
+            <line x1={ax} y1={ay} x2={bx} y2={by} stroke={s.color} strokeWidth={1} />
+            <text x={tx} y={by - 1} textAnchor={anchor} fontSize="10.5" fontWeight="700" fill={s.color}>{s.name}</text>
+            <text x={tx} y={by + 10} textAnchor={anchor} fontSize="9" fill={C.textDim} fontFamily={NUMFONT}>{fmtEUR(s.value)}</text>
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
+function MonthlyChart({ data, C }) {
+  if (!data.length) return <div style={{ color: C.textDim, fontSize: 13 }}>Noch keine datierten Ausgaben – trag bei den Einträgen ein Datum ein.</div>;
+  const W = 380, H = 170, padT = 22, padB = 24, padX = 8;
+  const max = Math.max(...data.map((d) => d.value), 1);
+  const n = data.length;
+  const slot = (W - padX * 2) / n;
+  const barW = Math.min(slot * 0.55, 34);
+  const chartH = H - padT - padB;
+  return (
+    <svg width="100%" viewBox={`0 0 ${W} ${H}`} style={{ maxWidth: 560, display: "block" }}>
+      {data.map((d, i) => {
+        const x = padX + i * slot + slot / 2;
+        const h = Math.max((d.value / max) * chartH, 2);
+        const y = padT + chartH - h;
+        return (
+          <g key={i}>
+            <rect x={x - barW / 2} y={y} width={barW} height={h} rx={3} fill={C.yellow} />
+            <text x={x} y={y - 5} textAnchor="middle" fontSize="9" fill={C.text} fontFamily={NUMFONT}>{fmtK(d.value)}</text>
+            <text x={x} y={H - 8} textAnchor="middle" fontSize="9" fill={C.textDim} fontFamily={NUMFONT}>{d.label}</text>
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
+// ---- Konfigurierbare Kostentabelle ----
+function CostTable({ title, rows, columns, cats, onChange, C, summary, catDefaults }) {
+  const [sk, setSk] = useState(null);
+  const [sd, setSd] = useState(1);
+  const inputBase = { width: "100%", background: "transparent", border: "1px solid transparent", color: C.text, fontSize: 13, padding: "6px 7px", borderRadius: 6, outline: "none", fontFamily: "inherit" };
+  const catKey = (columns.find((c) => c.kind === "cat") || {}).key || "kat";
+  const sumRaw = rows.reduce((s, r) => s + (Number(r.preis) || 0), 0);
+
+  const setCell = (id, key, val, imm, extra) => onChange(rows.map((r) => (r.id === id ? { ...r, [key]: val, ...(extra || {}) } : r)), imm);
+  const onCat = (id, val) => {
+    const row = rows.find((r) => r.id === id) || {};
+    const extra = {}; const defs = catDefaults && catDefaults[val];
+    if (defs) Object.keys(defs).forEach((k) => { if (!row[k]) extra[k] = defs[k]; });
+    setCell(id, catKey, val, true, extra);
+  };
+  const addRow = () => {
+    const blank = { id: uid("x") };
+    columns.forEach((c) => {
+      if (c.kind === "cat") blank[c.key] = cats[0];
+      else if (c.kind === "select") blank[c.key] = c.options[0];
+      else if (c.kind === "money") blank[c.key] = 0;
+      else blank[c.key] = "";
+    });
+    const defs = catDefaults && catDefaults[blank[catKey]];
+    if (defs) Object.assign(blank, defs);
+    onChange([...rows, blank], true);
+  };
+  const delRow = (id) => onChange(rows.filter((r) => r.id !== id), true);
+
+  const toggleSort = (key, kind) => { if (sk === key) setSd((d) => -d); else { setSk(key); setSd(1); } };
+  const sorted = useMemo(() => {
+    if (!sk) return rows;
+    const col = columns.find((c) => c.key === sk);
+    const num = col && (col.kind === "money" || col.kind === "num");
+    return [...rows].sort((a, b) => {
+      let x = a[sk], y = b[sk];
+      if (num) { x = Number(x) || 0; y = Number(y) || 0; } else { x = (x || "").toString().toLowerCase(); y = (y || "").toString().toLowerCase(); }
+      return x < y ? -sd : x > y ? sd : 0;
+    });
+  }, [rows, sk, sd, columns]);
+
+  const renderCell = (r, col) => {
+    const v = r[col.key];
+    if (col.kind === "date") return (
+      <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+        <input type="date" value={v || ""} onChange={(e) => setCell(r.id, col.key, e.target.value, true)} style={{ ...inputBase, colorScheme: "dark", fontFamily: NUMFONT, fontSize: 12, color: v ? C.text : C.textDim }} />
+        <button onClick={() => setCell(r.id, col.key, today(), true)} title="Heute eintragen" style={heuteBtn(C)}>heute</button>
+      </div>
+    );
+    if (col.kind === "cat") { const cc = CAT_COLORS[v] || C.textDim; return (
+      <select value={v} onChange={(e) => onCat(r.id, e.target.value)} style={{ ...inputBase, cursor: "pointer", fontWeight: 700, fontSize: 12, color: cc, background: cc + "14", border: `1px solid ${cc}33` }}>
+        {cats.map((c) => <option key={c} value={c}>{c}</option>)}
+      </select>
+    ); }
+    if (col.kind === "select") return (
+      <select value={v} onChange={(e) => setCell(r.id, col.key, e.target.value, true)} style={{ ...inputBase, cursor: "pointer", fontSize: 12, color: C.text }}>
+        {col.options.map((o) => <option key={o} value={o}>{o}</option>)}
+      </select>
+    );
+    if (col.kind === "anbieter") {
+      if (r.kat === "Benzin") {
+        const cur = FUEL_BRANDS.includes(v) ? v : "ARAL";
+        const bs = FUEL_BRAND_STYLE[cur];
+        return (
+          <select value={cur} onChange={(e) => setCell(r.id, col.key, e.target.value, true)}
+            style={{ ...inputBase, cursor: "pointer", fontSize: 12, fontWeight: 700, color: bs.color, background: bs.background, border: `1px solid ${C.line}` }}>
+            {FUEL_BRANDS.map((o) => <option key={o} value={o} style={{ color: FUEL_BRAND_STYLE[o].color, background: FUEL_BRAND_STYLE[o].background, fontWeight: 700 }}>{o}</option>)}
+          </select>
+        );
+      }
+      return <textarea rows={1} value={v} placeholder="—" onChange={(e) => setCell(r.id, col.key, e.target.value)} style={{ ...inputBase, resize: "vertical", color: C.textDim }} />;
+    }
+    if (col.kind === "money") return (
+      <div style={{ display: "flex", alignItems: "center", gap: 2 }}>
+        <input type="number" value={v} placeholder="0" onChange={(e) => setCell(r.id, col.key, e.target.value)} style={{ ...inputBase, textAlign: "right", fontFamily: NUMFONT, fontVariantNumeric: "tabular-nums", fontWeight: 700, fontSize: 14, color: C.yellow }} />
+        <span style={{ color: C.textDim, fontSize: 13, paddingRight: 4 }}>€</span>
+      </div>
+    );
+    if (col.kind === "num") return (
+      <div style={{ display: "flex", alignItems: "center", gap: 2 }}>
+        <input type="number" value={v} placeholder="0" onChange={(e) => setCell(r.id, col.key, e.target.value)} style={{ ...inputBase, textAlign: "right", fontFamily: NUMFONT, fontVariantNumeric: "tabular-nums", fontSize: 13, color: C.text }} />
+        {col.suffix && <span style={{ color: C.textDim, fontSize: 12, paddingRight: 4 }}>{col.suffix}</span>}
+      </div>
+    );
+    return <textarea rows={1} value={v} placeholder={col.key === "bez" ? "Bezeichnung…" : "—"} onChange={(e) => setCell(r.id, col.key, e.target.value)} style={{ ...inputBase, resize: "vertical", fontSize: 13, fontWeight: col.key === "bez" ? 600 : 400, color: col.key === "bez" ? C.yellow : C.textDim }} />;
+  };
+
+  const minW = columns.reduce((s, c) => s + c.w, 0) + 40;
+
+  return (
+    <div style={{ marginTop: 28 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 10, marginBottom: 12 }}>
+        <h2 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: C.text, textTransform: "uppercase", letterSpacing: 1 }}>{title}</h2>
+        <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
+          {summary ? summary(rows, C) : <span style={{ fontSize: 13, color: C.textDim }}>Summe <span style={{ color: C.yellow, fontFamily: NUMFONT, fontWeight: 700 }}>{fmtEUR(sumRaw)}</span></span>}
+          <button onClick={addRow} style={btn(C, true)}>+ Zeile</button>
+        </div>
+      </div>
+      <div style={{ background: C.surface, border: `1px solid ${C.line}`, borderRadius: 12, overflow: "hidden" }}>
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: minW }}>
+            <thead>
+              <tr style={{ background: "#000" }}>
+                {columns.map((col) => (
+                  <th key={col.key} className="hdr" onClick={() => toggleSort(col.key, col.kind)}
+                    style={{ textAlign: "left", padding: "11px 9px", fontSize: 11, letterSpacing: 1, textTransform: "uppercase", color: "#fff", fontWeight: 700, minWidth: col.w, borderBottom: `1px solid ${C.line}`, whiteSpace: "nowrap", userSelect: "none" }}>
+                    {col.label}{sk === col.key ? (sd === 1 ? " ▲" : " ▼") : ""}
+                  </th>
+                ))}
+                <th style={{ width: 34, background: "#000", borderBottom: `1px solid ${C.line}` }} />
+              </tr>
+            </thead>
+            <tbody>
+              {sorted.map((r) => (
+                <tr key={r.id} className="row" style={{ borderBottom: `1px solid ${C.lineSoft}` }}>
+                  {columns.map((col) => <td key={col.key} style={td()}>{renderCell(r, col)}</td>)}
+                  <td style={{ ...td(), textAlign: "center" }}>
+                    <button className="danger" onClick={() => delRow(r.id)} title="Zeile löschen" style={{ background: "none", border: "none", color: C.textDim, cursor: "pointer", fontSize: 18, lineHeight: 1, padding: 4 }}>×</button>
+                  </td>
+                </tr>
+              ))}
+              {rows.length === 0 && (<tr><td colSpan={columns.length + 1} style={{ padding: 24, textAlign: "center", color: C.textDim }}>Noch keine Einträge — „+ Zeile" zum Anlegen.</td></tr>)}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+// --- App mounten ---
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(<App />);
+
+// --- Service Worker fuer Offline-Betrieb (PWA) ---
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("./sw.js").catch(() => {});
+  });
+}
+
+</script>
+</body>
+</html>
