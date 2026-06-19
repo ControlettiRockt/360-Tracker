@@ -791,7 +791,8 @@ root.render(<App />);
     if (!window.Babel) { show("Babel nicht geladen"); return; }
     var src = document.getElementById("appsrc").textContent, out;
     try {
-      out = Babel.transform(src, { presets: [["react", { runtime: "classic" }]] }).code;
+      out = Babel.transform(src, { plugins: [["transform-react-jsx", { runtime: "classic" }]] }).code;
+      out = out.replace(/import[^;\n]*["']react\/jsx[^"']*["'][^;\n]*;?/g, "");
     } catch (e) {
       show("Uebersetzen (Zeile " + (e && e.loc ? e.loc.line : "?") + "): " + (e && e.message ? e.message : e));
       return;
