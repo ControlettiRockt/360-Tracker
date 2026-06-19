@@ -11,6 +11,13 @@
 <link rel="icon" href="./icon-192.png" />
 <link rel="apple-touch-icon" href="./icon-192.png" />
 <title>Ferrari 360 Kostentracker</title>
+<script>
+  /* Selbstheilung: alten Service Worker entfernen und Caches leeren, damit keine veraltete Version mehr ausgeliefert wird. */
+  try {
+    if ("serviceWorker" in navigator) navigator.serviceWorker.getRegistrations().then(function (rs) { rs.forEach(function (r) { r.unregister(); }); });
+    if (window.caches) caches.keys().then(function (ks) { ks.forEach(function (k) { caches.delete(k); }); });
+  } catch (e) {}
+</script>
 <style>
   html, body { margin: 0; padding: 0; background: #111214; }
   #root { min-height: 100vh; }
@@ -745,13 +752,22 @@ function CostTable({ title, rows, columns, cats, onChange, C, summary, catDefaul
 const root = ReactDOM.createRoot(document.getElementById("root"));
 root.render(<App />);
 
-// --- Service Worker fuer Offline-Betrieb (PWA) ---
-if ("serviceWorker" in navigator) {
-  window.addEventListener("load", () => {
-    navigator.serviceWorker.register("./sw.js").catch(() => {});
-  });
-}
-
+</script>
+<script>
+  /* Diagnose: Wenn die App nach 9s nicht gestartet ist, Klartext statt endlosem "Lade...". */
+  setTimeout(function () {
+    var boot = document.getElementById("boot");
+    if (!boot) return; // App hat #root ersetzt = alles ok
+    var miss = [];
+    if (!window.React) miss.push("React");
+    if (!window.ReactDOM) miss.push("ReactDOM");
+    if (!window.Babel) miss.push("Babel");
+    boot.style.color = "#ff6b6b";
+    boot.style.padding = "20px";
+    boot.textContent = miss.length
+      ? ("Konnte nicht laden: " + miss.join(", ") + ". Die Skripte werden vom Netz oder Browser blockiert.")
+      : "Bibliotheken sind da, aber die App ist nicht gestartet. Bitte mir diesen Text als Screenshot schicken.";
+  }, 9000);
 </script>
 </body>
 </html>
