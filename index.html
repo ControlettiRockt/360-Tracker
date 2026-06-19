@@ -18,6 +18,31 @@
     if (window.caches) caches.keys().then(function (ks) { ks.forEach(function (k) { caches.delete(k); }); });
   } catch (e) {}
 </script>
+<script>
+  /* Zeigt die echte Fehlermeldung auf dem Bildschirm an, statt still zu hängen. */
+  (function () {
+    function show(msg) {
+      var b = document.getElementById("boot");
+      if (!b) return;
+      b.style.color = "#ff6b6b";
+      b.style.padding = "16px";
+      b.style.paddingTop = "56px";
+      b.style.fontSize = "12px";
+      b.style.fontFamily = "monospace";
+      b.style.whiteSpace = "pre-wrap";
+      b.style.textAlign = "left";
+      b.textContent = "FEHLER:\n" + msg;
+    }
+    window.addEventListener("error", function (e) {
+      var m = e && e.message ? e.message : String(e);
+      if (e && e.filename) m += "\n(Zeile " + e.lineno + ":" + e.colno + ")";
+      show(m);
+    });
+    window.addEventListener("unhandledrejection", function (e) {
+      show("Promise-Fehler: " + (e && e.reason ? (e.reason.message || e.reason) : "unbekannt"));
+    });
+  })();
+</script>
 <style>
   html, body { margin: 0; padding: 0; background: #111214; }
   #root { min-height: 100vh; }
@@ -758,6 +783,7 @@ root.render(<App />);
   setTimeout(function () {
     var boot = document.getElementById("boot");
     if (!boot) return; // App hat #root ersetzt = alles ok
+    if (boot.textContent.indexOf("FEHLER") === 0) return; // echte Fehlermeldung steht schon da
     var miss = [];
     if (!window.React) miss.push("React");
     if (!window.ReactDOM) miss.push("ReactDOM");
