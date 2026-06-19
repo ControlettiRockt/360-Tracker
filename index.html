@@ -56,7 +56,7 @@
 </head>
 <body>
 <div id="root"><div id="boot">Lade Kostentracker…</div></div>
-<script type="text/babel" data-presets="react">
+<script type="text/plain" id="appsrc">
 // --- Hooks aus globalem React ---
 const { useState, useEffect, useMemo, useCallback, useRef } = React;
 
@@ -779,21 +779,29 @@ root.render(<App />);
 
 </script>
 <script>
-  /* Diagnose: Wenn die App nach 9s nicht gestartet ist, Klartext statt endlosem "Lade...". */
-  setTimeout(function () {
-    var boot = document.getElementById("boot");
-    if (!boot) return; // App hat #root ersetzt = alles ok
-    if (boot.textContent.indexOf("FEHLER") === 0) return; // echte Fehlermeldung steht schon da
-    var miss = [];
-    if (!window.React) miss.push("React");
-    if (!window.ReactDOM) miss.push("ReactDOM");
-    if (!window.Babel) miss.push("Babel");
-    boot.style.color = "#ff6b6b";
-    boot.style.padding = "20px";
-    boot.textContent = miss.length
-      ? ("Konnte nicht laden: " + miss.join(", ") + ". Die Skripte werden vom Netz oder Browser blockiert.")
-      : "Bibliotheken sind da, aber die App ist nicht gestartet. Bitte mir diesen Text als Screenshot schicken.";
-  }, 9000);
+  /* App kontrolliert selbst uebersetzen und ausfuehren – Fehler werden sichtbar gemacht. */
+  (function () {
+    function show(msg) {
+      var b = document.getElementById("boot");
+      if (!b) return;
+      b.style.color = "#ff6b6b"; b.style.padding = "16px"; b.style.paddingTop = "56px";
+      b.style.fontSize = "11px"; b.style.fontFamily = "monospace"; b.style.whiteSpace = "pre-wrap"; b.style.textAlign = "left";
+      b.textContent = "FEHLER:\n" + msg;
+    }
+    if (!window.Babel) { show("Babel nicht geladen"); return; }
+    var src = document.getElementById("appsrc").textContent, out;
+    try {
+      out = Babel.transform(src, { presets: ["react"] }).code;
+    } catch (e) {
+      show("Uebersetzen (Zeile " + (e && e.loc ? e.loc.line : "?") + "): " + (e && e.message ? e.message : e));
+      return;
+    }
+    try {
+      (0, eval)(out);
+    } catch (e) {
+      show("Ausfuehren: " + (e && e.message ? e.message : e) + "\n\n" + (((e && e.stack) || "").split("\n").slice(0, 5).join("\n")));
+    }
+  })();
 </script>
 </body>
 </html>
